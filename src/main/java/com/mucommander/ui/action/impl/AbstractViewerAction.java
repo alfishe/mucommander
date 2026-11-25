@@ -64,6 +64,14 @@ abstract class AbstractViewerAction extends SelectedFileAction {
         if (file == null) {
             return;
         }
+        openFile(file);
+    }
+
+    /**
+     * Views/edits the given file exactly like this action does for the selected file: internal viewer/editor or the
+     * custom command configured by the user.
+     */
+    public void openFile(AbstractFile file) {
         Command customCommand = getCustomCommand(file);
         if (preferInternalAction(file) || customCommand == null) {
             // If we're not using a custom editor, this action behaves exactly like its parent.

@@ -29,6 +29,7 @@ import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import com.mucommander.commons.file.AbstractFile;
@@ -41,6 +42,7 @@ import com.mucommander.ui.action.ActionProperties;
 import com.mucommander.ui.action.impl.EditAction;
 import com.mucommander.ui.action.impl.MkdirAction;
 import com.mucommander.ui.action.impl.MkfileAction;
+import com.mucommander.ui.action.impl.NewFileAction;
 import com.mucommander.ui.chooser.SizeChooser;
 import com.mucommander.ui.dialog.DialogToolkit;
 import com.mucommander.ui.dialog.FocusDialog;
@@ -74,6 +76,8 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
     private final JButton btnOk;
 
     private final boolean mkfileMode;
+    /** New File (Shift+F4): plain name prompt, empty file, then open it with the F4 editor */
+    private final boolean newFileMode;
     private boolean autoExecutableSelect;
     private static boolean openInTextEditor = true;
 
@@ -100,22 +104,33 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
      * @param mkfileMode if true, the dialog will operate in 'mkfile' mode, if false in 'mkdir' mode
      */
     public MakeDirectoryFileDialog(MainFrame mainFrame, boolean mkfileMode) {
-        super(mainFrame.getJFrame(), ActionManager.getActionInstance(mkfileMode ? MkfileAction.Descriptor.ACTION_ID : MkdirAction.Descriptor.ACTION_ID, mainFrame).getLabel(), mainFrame.getJFrame());
+        this(mainFrame, mkfileMode, false);
+    }
+
+    /**
+     * Creates a new Mkdir/Mkfile dialog.
+     *
+     * @param mkfileMode if true, the dialog will operate in 'mkfile' mode, if false in 'mkdir' mode
+     * @param newFileMode (mkfile mode only) New File: just a name field; the empty file is opened with the F4 editor
+     */
+    public MakeDirectoryFileDialog(MainFrame mainFrame, boolean mkfileMode, boolean newFileMode) {
+        super(mainFrame.getJFrame(), ActionManager.getActionInstance(actionId(mkfileMode, newFileMode), mainFrame).getLabel(), mainFrame.getJFrame());
         this.mainFrame = mainFrame;
         this.mkfileMode = mkfileMode;
+        this.newFileMode = mkfileMode && newFileMode;
         setStorageSuffix(mkfileMode ? "file" : "dir");
 
         Container contentPane = getContentPane();
 
         YBoxPanel mainPanel = new YBoxPanel();
-        mainPanel.add(new JLabel(ActionProperties.getActionTooltip(mkfileMode ? MkfileAction.Descriptor.ACTION_ID : MkdirAction.Descriptor.ACTION_ID)+" :"));
+        mainPanel.add(new JLabel(ActionProperties.getActionTooltip(actionId(mkfileMode, newFileMode))+" :"));
 
         // Create a path field with auto-completion capabilities
         pathField = new FilePathField();
         pathField.addActionListener(this);
 
         // Sets the initial selection.
-        AbstractFile currentFile = mainFrame.getActiveTable().getSelectedFile();
+        AbstractFile currentFile = this.newFileMode ? null : mainFrame.getActiveTable().getSelectedFile();
         if (currentFile != null) {
             String initialValue = makeInitialValue(currentFile);
             if (initialValue != null) {
@@ -126,7 +141,9 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
         pathField.setSelectionEnd(pathField.getText().length());
         mainPanel.add(pathField);
 
-        if (mkfileMode) {
+        if (this.newFileMode) {
+            // name only
+        } else if (mkfileMode) {
             JPanel allocPanel = new JPanel(new BorderLayout());
 
             cbAllocateSpace = new JCheckBox(i18n("mkfile_dialog.allocate_space")+":", false);
@@ -203,6 +220,19 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
         setMaximumSize(MAXIMUM_DIALOG_DIMENSION);
     }
 
+    private static String actionId(boolean mkfileMode, boolean newFileMode) {
+        if (!mkfileMode) {
+            return MkdirAction.Descriptor.ACTION_ID;
+        }
+        return newFileMode ? NewFileAction.Descriptor.ACTION_ID : MkfileAction.Descriptor.ACTION_ID;
+    }
+
+    /** Opens the file with the same editor F4 would use (internal editor or the configured custom editor). */
+    private void openWithF4Editor(AbstractFile file) {
+        SwingUtilities.invokeLater(() ->
+            ((EditAction) ActionManager.getActionInstance(EditAction.Descriptor.ACTION_ID, mainFrame)).openFile(file));
+    }
+
     private String makeInitialValue(AbstractFile currentFile) {
         if (mkfileMode) {
             return currentFile.getName();
@@ -236,6 +266,13 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
         // Don't check for existing regular files, MakeDirectoryFileJob will take of it and popup a FileCollisionDialog 
         AbstractFile destFile = resolvedDest.getDestinationFile();
 
+        // New File on an existing file: open it as is instead of overwriting it with an empty file
+        // (resolveDestination() is called with requireParentExists=false, so it never reports EXISTING_FILE)
+        if (newFileMode && destFile.exists() && !destFile.isDirectory()) {
+            openWithF4Editor(destFile);
+            return;
+        }
+
         FileSet fileSet = new FileSet(destFile.getParent());
         // Job's FileSet needs to contain at least one file
         fileSet.add(destFile);
@@ -250,6 +287,18 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
 
     @NotNull
     private MakeDirectoryFileJob buildJob(FileSet fileSet, ProgressDialog progressDialog) {
+        if (newFileMode) {
+            return new MakeDirectoryFileJob(progressDialog, mainFrame, fileSet, -1, false) {
+                @Override
+                protected boolean processFile(AbstractFile file, Object recurseParams) {
+                    boolean result = super.processFile(file, recurseParams);
+                    if (result) {
+                        openWithF4Editor(file);
+                    }
+                    return result;
+                }
+            };
+        }
         if (mkfileMode) {
             long allocateSpace = cbAllocateSpace.isSelected() ? allocateSpaceChooser.getValue() : -1;
             boolean executable = cbMakeExecutable != null && cbMakeExecutable.isSelected();
@@ -283,6 +332,9 @@ public class MakeDirectoryFileDialog extends FocusDialog implements ActionListen
 
 
     public void itemStateChanged(ItemEvent e) {
+        if (allocateSpaceChooser == null) {
+            return;
+        }
         allocateSpaceChooser.setEnabled(cbAllocateSpace.isSelected());
         if (e.getItem() == cbAllocateSpace && cbAllocateSpace.isSelected()) {
             cbOpenTextEditor.setSelected(false);

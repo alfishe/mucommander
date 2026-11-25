@@ -62,10 +62,18 @@ public abstract class PopupButton extends NonFocusableButton {
     /** Controls the number of milliseconds to hold down the mouse button on the button to display the popup menu */
     private final static int POPUP_DELAY = 300;
     
-    /** 
-     * Box-orientation constant used to specify the buttom-left oriented side of a box.
+    /**
+     * Box-orientation constant: popup below the button, right edges aligned (menu grows to the left).
      */
-    private static final int BOTTOM_LEFT_ORIENTED = 5;
+    public static final int BOTTOM_LEFT_ORIENTED = 5;
+
+    /**
+     * Sets where the popup menu is shown relative to this button: one of {@link #BOTTOM}, {@link #TOP},
+     * {@link #LEFT}, {@link #RIGHT} or {@link #BOTTOM_LEFT_ORIENTED}.
+     */
+    public void setPopupMenuLocation(int location) {
+        this.popupMenuLocation = location;
+    }
 
 
     /**

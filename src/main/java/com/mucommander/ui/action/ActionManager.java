@@ -128,6 +128,7 @@ public class ActionManager {
     	registerAction(new MinimizeWindowAction.Descriptor());
     	registerAction(new MkdirAction.Descriptor());
 		registerAction(new MkfileAction.Descriptor());
+		registerAction(new NewFileAction.Descriptor());
     	registerAction(new MoveAction.Descriptor());
     	registerAction(new MoveTabToOtherPanelAction.Descriptor());
     	registerAction(new NewWindowAction.Descriptor());

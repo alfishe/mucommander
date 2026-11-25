@@ -19,6 +19,7 @@ package com.mucommander.ui.dialog.bookmark
 
 import com.mucommander.bookmark.Bookmark
 import com.mucommander.bookmark.BookmarkManager
+import com.mucommander.commons.file.AbstractFile
 import com.mucommander.ui.action.ActionProperties
 import com.mucommander.ui.action.impl.AddBookmarkAction
 import com.mucommander.ui.dialog.DialogToolkit
@@ -39,10 +40,16 @@ import javax.swing.event.DocumentListener
  * This dialog allows the user to add a bookmark and enter a name for it. User can also
  * choose to store login and password information in the bookmark's URL if the bookmark
  * contains login/password information.
- * 
+ *
+ * The folder defaults to the active panel's current folder; the directory hotlist button passes the folder of the
+ * panel it belongs to. Logins are never stored in bookmarks: the location is saved without credentials.
+ *
  * @author Maxence Bernard
  */
-class AddBookmarkDialog(mainFrame: MainFrame) : FocusDialog(
+class AddBookmarkDialog @JvmOverloads constructor(
+    mainFrame: MainFrame,
+    private val folder: AbstractFile = mainFrame.activePanel.currentFolder
+) : FocusDialog(
     mainFrame.jFrame,
     ActionProperties.getActionLabel(AddBookmarkAction.Descriptor.ACTION_ID),
     mainFrame.jFrame
@@ -55,11 +62,14 @@ class AddBookmarkDialog(mainFrame: MainFrame) : FocusDialog(
     private val cancelButton: JButton
 
     init {
-        val currentFolder = mainFrame.activePanel.currentFolder
+        val currentFolder = folder
+        val folderURL = currentFolder.getURL()
 
         // Text fields panel
         val compPanel = XAlignedComponentPanel().apply {
-            edtName = JTextField(currentFolder.getName()).apply {
+            // Network roots (smb://host/) have no file name: fall back to the host name
+            val defaultName = currentFolder.getName().ifBlank { folderURL.host ?: currentFolder.absolutePath }
+            edtName = JTextField(defaultName).apply {
                 isEditable = true
                 document.addDocumentListener(this@AddBookmarkDialog)    // Monitors text changes to disable 'Add' button if name field is empty
             }

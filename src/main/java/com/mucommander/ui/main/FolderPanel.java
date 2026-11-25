@@ -197,6 +197,13 @@ public class FolderPanel implements FocusListener, QuickListContainer, ActiveTab
         c.insets = new Insets(0, 4, 0, 0);
         locationPanel.add(locationBar, c);
 
+        // Directory hotlist button ('*') at the right edge, like in Total Commander
+        c.weightx = 0;
+        c.gridx = 2;
+        c.fill = GridBagConstraints.VERTICAL;
+        c.insets = new Insets(0, 2, 0, 0);
+        locationPanel.add(new HotlistButton(this), c);
+
         panel.add(locationPanel, BorderLayout.NORTH);
 
         // create the FileTable

@@ -74,7 +74,7 @@ public class EditAsAction extends SelectedFilesAction {
 
         public KeyStroke getDefaultAltKeyStroke() { return null; }
 
-        public KeyStroke getDefaultKeyStroke() { return KeyStroke.getKeyStroke(KeyEvent.VK_F4, KeyEvent.SHIFT_DOWN_MASK); }
+        public KeyStroke getDefaultKeyStroke() { return KeyStroke.getKeyStroke(KeyEvent.VK_F4, KeyEvent.CTRL_DOWN_MASK | KeyEvent.SHIFT_DOWN_MASK); }
 
         public TcAction createAction(MainFrame mainFrame, Map<String,Object> properties) {
             return new EditAsAction(mainFrame, properties);

@@ -50,8 +50,15 @@ def isMac = System.getProperty('os.name').toLowerCase().contains('mac')
 application {
     mainClass = 'com.mucommander.TrolCommander'
     applicationDefaultJvmArgs = [
-        '-Xmx128m',
-        '-Xms128m',
+        // Heap: start small and grow only when needed. A listed file takes ~450 bytes: 512 MB is enough for about a
+        // million files in total over both panels, including the moment a large folder replaces another one.
+        // G1 is told to prefer a small heap over a few more GC cycles (GCTimeRatio) and to give back what it no
+        // longer needs (heap free ratios).
+        '-Xms32m',
+        '-Xmx512m',
+        '-XX:GCTimeRatio=4',
+        '-XX:MinHeapFreeRatio=10',
+        '-XX:MaxHeapFreeRatio=30',
         '-XX:ReservedCodeCacheSize=64m',
         '-XX:+IgnoreUnrecognizedVMOptions',
         '-Djava.system.class.loader=com.mucommander.commons.file.AbstractFileClassLoader',

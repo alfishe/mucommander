@@ -88,7 +88,8 @@ public class LocalFile extends ProtocolFile {
 
 
     protected File file;
-    private final FilePermissions permissions;
+    /** Created on first use: most files of a large folder never have their permissions asked for */
+    private FilePermissions permissions;
 
     /** Absolute file path, free of trailing separator */
     protected String absPath;
@@ -201,7 +202,6 @@ public class LocalFile extends ProtocolFile {
         }
 
         this.file = file;
-        this.permissions = new LocalFilePermissions(file);
     }
 
 
@@ -729,7 +729,11 @@ public class LocalFile extends ProtocolFile {
 	
     @Override
     public FilePermissions getPermissions() {
-        return permissions;
+        FilePermissions p = permissions;
+        if (p == null) {
+            p = permissions = new LocalFilePermissions(file);
+        }
+        return p;
     }
 
     @Override
@@ -1039,7 +1043,11 @@ public class LocalFile extends ProtocolFile {
             return hasRootDrives() ? absPath : "/";
         }
 
-        return file.getName();
+        // java.io.File#getName() creates a new String on every call: return the URL's one when they're equal, it is
+        // kept anyway, so that files cached by the thousands (CachedFile) don't hold a second copy of their name
+        String name = file.getName();
+        String urlName = fileURL.getFilename();
+        return name.equals(urlName) ? urlName : name;
     }
 
     @Override
@@ -1097,16 +1105,33 @@ public class LocalFile extends ProtocolFile {
         int nbFiles = files.length;
         AbstractFile[] children = new AbstractFile[nbFiles];
 
+        // On Unix-like systems the path of the java.io.File created by listFiles() is exactly the path of the child:
+        // share that one String between the File, the FileURL and the LocalFile instead of building copies of it
+        boolean sharePath = !USES_ROOT_DRIVES && "/".equals(SEPARATOR);
+
         for(int i = 0; i < nbFiles; i++) {
+            File childFile = files[i];
             // Clone the FileURL of this file and set the child's path, this is more efficient than creating a new
             // FileURL instance from scratch.
             FileURL childURL = (FileURL)fileURL.clone();
 
-			childURL.setPath(absPath + SEPARATOR + files[i].getName());
+            String childPath = sharePath ? childFile.getPath() : null;
+            if (childPath == null || !childPath.startsWith("/")) {
+                childPath = absPath + SEPARATOR + childFile.getName();
+            }
+            childURL.setPath(childPath);
 
-            // Retrieves an AbstractFile (LocalFile or AbstractArchiveFile) instance that's potentially already in
-            // the cache, reuse this file as the file's parent, and the already-created java.io.File instance.
-            children[i] = FileFactory.getFile(childURL, this, files[i]);
+            if (sharePath && !FileFactory.isArchiveFilename(childURL.getFilename())) {
+                // A plain file: create it directly. FileFactory#getFile would come to the same result after
+                // tokenizing the whole path again and would keep every child of the folder in its file pool.
+                LocalFile child = new LocalFile(childURL, childFile);
+                child.setParent(this);
+                children[i] = child;
+            } else {
+                // Retrieves an AbstractFile (LocalFile or AbstractArchiveFile) instance that's potentially already in
+                // the cache, reuse this file as the file's parent, and the already-created java.io.File instance.
+                children[i] = FileFactory.getFile(childURL, this, childFile);
+            }
         }
 
         return children;

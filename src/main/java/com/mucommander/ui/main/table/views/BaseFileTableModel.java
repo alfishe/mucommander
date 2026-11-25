@@ -20,7 +20,6 @@ package com.mucommander.ui.main.table.views;
 import com.mucommander.commons.file.AbstractFile;
 import com.mucommander.commons.file.filter.FileFilter;
 import com.mucommander.commons.file.impl.CachedFile;
-import com.mucommander.commons.file.impl.local.LocalFile;
 import com.mucommander.commons.file.util.FileComparator;
 import com.mucommander.commons.file.util.FileSet;
 import com.mucommander.conf.TcConfigurations;
@@ -34,6 +33,8 @@ import com.mucommander.ui.quicksearch.QuickSearch;
 
 import javax.swing.table.AbstractTableModel;
 import java.awt.Cursor;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ForkJoinPool;
 import java.util.*;
 
 /**
@@ -105,7 +106,6 @@ public abstract class BaseFileTableModel extends AbstractTableModel {
     /** Here will be stored sizes of directories calculated by F3 command */
     protected final Map<AbstractFile, Long> directorySizes = new HashMap<>();
 
-    private FileComparator fileComparator;
 
     /*
      * First visible row
@@ -190,6 +190,53 @@ public abstract class BaseFileTableModel extends AbstractTableModel {
         return sizeFormat;
     }
 
+    /** Below this number of files, reading their attributes on several threads isn't worth it */
+    private static final int PARALLEL_PREFETCH_THRESHOLD = 2000;
+
+    /**
+     * Threads reading the attributes of the files of large local folders. The calls block on the disk, so they get
+     * their own small pool rather than the common one. Idle threads end after a while.
+     */
+    private static final ForkJoinPool PREFETCH_POOL =
+            new ForkJoinPool(Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors())));
+
+    /**
+     * Wraps the given files into {@link CachedFile} instances (in place) and fetches the attributes that the table
+     * needs to sort and display them. This is where the disk is accessed for every file of a folder: call it from
+     * the thread that has listed the folder, not from the event thread.
+     */
+    public static void prepareFiles(AbstractFile[] files) {
+        int nbFiles = files.length;
+        for (int i = 0; i < nbFiles; i++) {
+            if (!(files[i] instanceof CachedFile)) {
+                files[i] = new CachedFile(files[i], true);
+            }
+        }
+        if (nbFiles >= PARALLEL_PREFETCH_THRESHOLD) {
+            // The attributes of local files are independent system calls: run them on several threads, this is
+            // several times faster than one call after the other, even more so when they aren't in the disk cache.
+            // Other kinds of files (network, archives) are left to the sequential loop below.
+            int nbTasks = PREFETCH_POOL.getParallelism() * 4;
+            int chunk = (nbFiles + nbTasks - 1) / nbTasks;
+            List<Callable<Void>> tasks = new ArrayList<>(nbTasks);
+            for (int start = 0; start < nbFiles; start += chunk) {
+                int from = start;
+                int to = Math.min(nbFiles, start + chunk);
+                tasks.add(() -> {
+                    for (int i = from; i < to; i++) {
+                        ((CachedFile) files[i]).prefetchLocalAttributes();
+                    }
+                    return null;
+                });
+            }
+            PREFETCH_POOL.invokeAll(tasks);     // whatever a failed task left out is fetched by the loop below
+        }
+        for (AbstractFile file : files) {
+            // Cheap for the files already done above
+            prefetchCachedFileAttributes(file);
+        }
+    }
+
     /**
      * Pre-fetch the attributes that are used by the table renderer and some actions from the given CachedFile.
      * By doing so, the attributes will be available when the associated getters are called and thus the methods won't
@@ -198,9 +245,12 @@ public abstract class BaseFileTableModel extends AbstractTableModel {
      * @param cachedFile a CachedFile instance from which to pre-fetch attributes
      */
     private static void prefetchCachedFileAttributes(AbstractFile cachedFile) {
-        cachedFile.isDirectory();
+        // Plain local files: everything in one lstat call. Other files: attribute by attribute.
+        if (!(cachedFile instanceof CachedFile cf && cf.prefetchLocalAttributes())) {
+            cachedFile.isDirectory();
+            cachedFile.isHidden();
+        }
         cachedFile.isBrowsable();
-        cachedFile.isHidden();
 
         // Pre-fetch isSymlink attribute and if the file is a symlink, pre-fetch the canonical file and its attributes
         if (cachedFile.isSymlink()) {
@@ -292,89 +342,19 @@ public abstract class BaseFileTableModel extends AbstractTableModel {
      * Sorts rows by the current criterion, ascending/descending order and 'folders first' value.
      */
     public synchronized void sortRows() {
-        this.fileComparator = createFileComparator(sortInfo);
-        sort(0, fileArrayIndex.length - 1);
-        this.fileComparator = null;
+        createFileComparator().sortIndexes(cachedFiles, fileArrayIndex);
     }
 
-
-    //////////////////
-    // Sort methods //
-    //////////////////
-
-    private FileComparator createFileComparator(SortInfo sortInfo) {
+    /**
+     * Returns a comparator for the current sort criterion, ascending/descending order and 'folders first' value.
+     * Can be called outside the event thread, to sort the files of a folder before handing them to the table.
+     */
+    public FileComparator createFileComparator() {
+        SortInfo sortInfo = this.sortInfo;
         QuickSearch qs = quickSearch != null && quickSearch.isActive() && sortInfo.getQuickSearchMatchesFirst() ? quickSearch : null;
         return new FileComparator(sortInfo.getCriterion().getFileComparatorCriterion(), sortInfo.getAscendingOrder(),
                 sortInfo.getFoldersFirst(), sortInfo.getFoldersAlwaysAlphabetical(), qs);
     }
-
-
-    /**
-     * Quick sort implementation, based on James Gosling's implementation.
-     */
-    protected void sort(int lo0, int hi0) {
-        int lo = lo0;
-        int hi = hi0;
-
-        if (lo >= hi) {
-            return;
-        } else if (lo == hi - 1) {
-            // sort a two element list by swapping if necessary
-            int loIndex = fileArrayIndex[lo];
-            int hiIndex = fileArrayIndex[hi];
-            if (compare(loIndex, hiIndex) > 0) {
-                fileArrayIndex[lo] = hiIndex;
-                fileArrayIndex[hi] = loIndex;
-            }
-            return;
-        }
-
-        // Pick a pivot and move it out of the way
-        int pivotIndex = fileArrayIndex[(lo + hi) / 2];
-        fileArrayIndex[(lo + hi) / 2] = fileArrayIndex[hi];
-        fileArrayIndex[hi] = pivotIndex;
-
-        while (lo < hi) {
-            // Search forward from files[lo] until an element is found that
-            // is greater than the pivot or lo >= hi
-            //while (compare(cachedFiles[fileArrayIndex[lo]], pivot)<=0 && lo < hi) {
-            while (compare(fileArrayIndex[lo], pivotIndex) <= 0 && lo < hi) {
-                lo++;
-            }
-
-            // Search backward from files[hi] until element is found that
-            // is less than the pivot, or lo >= hi
-            //while (compare(pivot, cachedFiles[fileArrayIndex[hi]])<=0 && lo < hi ) {
-            while (compare(pivotIndex, fileArrayIndex[hi]) <= 0 && lo < hi ) {
-                hi--;
-            }
-
-            // Swap elements files[lo] and files[hi]
-            if (lo < hi) {
-                int temp = fileArrayIndex[lo];
-                fileArrayIndex[lo] = fileArrayIndex[hi];
-                fileArrayIndex[hi] = temp;
-            }
-        }
-
-        // Put the median in the "center" of the list
-        fileArrayIndex[hi0] = fileArrayIndex[hi];
-        fileArrayIndex[hi] = pivotIndex;
-
-        // Recursive calls, elements files[lo0] to files[lo-1] are less than or
-        // equal to pivot, elements files[hi+1] to files[hi0] are greater than pivot.
-        sort(lo0, lo-1);
-        sort(hi+1, hi0);
-    }
-
-
-    private int compare(int index1, int index2) {
-        if (index1 == index2) {
-            return 0;
-        }
-        return fileComparator.compare(cachedFiles[index1], cachedFiles[index2]);
-    }
-
 
 
     /**
@@ -423,20 +403,15 @@ public abstract class BaseFileTableModel extends AbstractTableModel {
         this.cachedFiles = children;
         this.fileArrayIndex = new int[nbFiles];
 
-        // we needn't prefetch local files for performance optimization purposes
-        // in the case of local files the lazy initialization will be enough
-        boolean needPrefetch = nbFiles > 0 && !(children[0] instanceof LocalFile);
-
+        // Files are normally prepared by prepareFiles() on the folder-reading thread already, so that this loop,
+        // which runs on the event thread, has nothing left to fetch from the disk
         for (int i = 0; i < nbFiles; i++) {
             AbstractFile child = children[i];
-            AbstractFile file = child instanceof CachedFile ? child : new CachedFile(child, true);
-
-            // Pre-fetch the attributes that are used by the table renderer and some actions.
-            if (needPrefetch) {
-                prefetchCachedFileAttributes(file);
+            if (!(child instanceof CachedFile)) {
+                child = new CachedFile(child, true);
+                prefetchCachedFileAttributes(child);
             }
-
-            cachedFiles[i] = file;
+            cachedFiles[i] = child;
             fileArrayIndex[i] = i;
         }
 
@@ -664,7 +639,7 @@ public abstract class BaseFileTableModel extends AbstractTableModel {
         // reduced to O(log n) instead of O(n^2)
         int left = parent == null ? 0 : 1;
         int right = getFilesCount() - 1;
-        FileComparator fc = createFileComparator(sortInfo);
+        FileComparator fc = createFileComparator();
 
         while (left <= right) {
             int mid = (right-left)/2 + left;

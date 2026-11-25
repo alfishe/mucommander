@@ -56,6 +56,7 @@ import com.mucommander.commons.collections.Enumerator;
 import com.mucommander.commons.conf.ConfigurationEvent;
 import com.mucommander.commons.conf.ConfigurationListener;
 import com.mucommander.commons.file.AbstractFile;
+import com.mucommander.commons.file.util.FileComparator;
 import com.mucommander.commons.file.util.FileSet;
 import com.mucommander.commons.runtime.OsFamily;
 import com.mucommander.commons.runtime.OsVersion;
@@ -607,10 +608,17 @@ public class FileTable extends JTable implements MouseListener, MouseMotionListe
             }
         }
 
+        // Read the attributes of the files and sort them here, on the folder-reading thread: for large folders this
+        // is the expensive part and the user interface must stay responsive meanwhile. The event thread only sorts
+        // again if the sort order has changed in the meantime.
+        BaseFileTableModel.prepareFiles(children);
+        FileComparator presortComparator = tableModel.createFileComparator();
+        presortComparator.sort(children);
+
         // Changes the current folder in the swing thread to make sure that repaints cannot
         // happen in the middle of the operation - this is used to prevent flickering, badly
         // refreshed frames and such unpleasant graphical artifacts.
-        Runnable folderChangeThread = new FolderChangeThread(folder, children, markedFiles, fileToSelect);
+        Runnable folderChangeThread = new FolderChangeThread(folder, children, markedFiles, fileToSelect, presortComparator);
 
         // Wait for the getTask to complete, so that we return only when the folder has actually been changed and the
         // table updated to reflect the new folder.
@@ -2271,12 +2279,16 @@ public class FileTable extends JTable implements MouseListener, MouseMotionListe
         private final AbstractFile[] children;
         private final FileSet        markedFiles;
         private final AbstractFile   selectedFile;
+        /** How the children have already been sorted, null if they aren't */
+        private final FileComparator presortComparator;
 
-        private FolderChangeThread(AbstractFile folder, AbstractFile[] children, FileSet markedFiles, AbstractFile selectedFile) {
+        private FolderChangeThread(AbstractFile folder, AbstractFile[] children, FileSet markedFiles, AbstractFile selectedFile,
+                                   FileComparator presortComparator) {
             this.folder       = folder;
             this.children     = children;
             this.markedFiles  = markedFiles;
             this.selectedFile = selectedFile;
+            this.presortComparator = presortComparator;
             setName(getClass().getName());
         }
 
@@ -2300,8 +2312,10 @@ public class FileTable extends JTable implements MouseListener, MouseMotionListe
                 }
 
                 // Sort the new folder using the current sort criteria, ascending/descending order and
-                // 'show folders first' values.
-                tableModel.sortRows();
+                // 'show folders first' values, unless the files are already sorted that way.
+                if (presortComparator == null || !presortComparator.sortsLike(tableModel.createFileComparator())) {
+                    tableModel.sortRows();
+                }
 
                 // Computes the index of the new row selection.
                 int indexToSelect = getIndexToSelect();

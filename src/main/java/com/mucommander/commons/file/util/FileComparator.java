@@ -4,6 +4,8 @@ import com.mucommander.commons.file.AbstractFile;
 import com.mucommander.ui.quicksearch.QuickSearch;
 
 import java.util.Comparator;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveAction;
 import java.util.regex.Pattern;
 
 
@@ -164,18 +166,27 @@ public class FileComparator implements Comparator<AbstractFile> {
      * than the second.
      */
     private static int compareStrings(String s1, String s2, boolean ignoreCase) {
+        return compareStrings(s1, firstDigitPos(s1), s2, -2, ignoreCase);
+    }
+
+    /**
+     * Same as {@link #compareStrings(String, String, boolean)} with the position of the first digit of the strings
+     * already known ({@link #firstDigitPos(String)}), or -2 if it hasn't been computed yet.
+     */
+    private static int compareStrings(String s1, int digitIndex1, String s2, int digitIndex2, boolean ignoreCase) {
         // Special treatment for strings that contain a number, so they are ordered by the number's value, e.g.:
         // 1 < 1a < 2 < 10, like Mac OS X Finder and Windows Explorer do.
         //
         // This special order applies only if both strings contain a number and have the same prefix. Otherwise, the general order applies.
-        int digitIndex1 = firstDigitPos(s1);
         if (digitIndex1 >= 0) {
-            int digitIndex2 = firstDigitPos(s2);
+            if (digitIndex2 == -2) {
+                digitIndex2 = firstDigitPos(s2);
+            }
             if (digitIndex2 >= 0) {
                 // So we got two filenames that both contain a number, check if they have the same prefix
 
                 // Note: compare prefixes only if start indexes match, faster that way
-                if (digitIndex1 == digitIndex2 && (digitIndex1==0 || s1.substring(0, digitIndex1).equals(s2.substring(0, digitIndex2)))) {
+                if (digitIndex1 == digitIndex2 && (digitIndex1==0 || s1.regionMatches(0, s2, 0, digitIndex1))) {
                     int g1Len = 0;
                     int l1 = s1.length();
                     for (int i = digitIndex1; i < l1; i++) {
@@ -244,6 +255,9 @@ public class FileComparator implements Comparator<AbstractFile> {
 
 
     private static int firstDigitPos(String s) {
+        if (s == null) {
+            return -1;
+        }
         final int len = s.length();
         for (int i = 0; i < len; i++) {
             char ch = s.charAt(i);
@@ -337,6 +351,251 @@ public class FileComparator implements Comparator<AbstractFile> {
         return ascending ? intValue : -intValue; // Note: ascending is used more often, more efficient to negate for descending
     }
 
+
+
+    /////////////////////////////////////
+    // Sort with pre-computed sort keys //
+    /////////////////////////////////////
+
+    /**
+     * Sorts the given files in place, in the same order as {@link java.util.Arrays#sort(Object[], Comparator)} with
+     * this comparator would. The sort keys (name, size, date...) are read once per file instead of once per
+     * comparison, which makes sorting large folders several times faster. The sort is stable.
+     */
+    public void sort(AbstractFile[] files) {
+        int n = files.length;
+        if (n < 2) {
+            return;
+        }
+        int[] indexes = new int[n];
+        for (int i = 0; i < n; i++) {
+            indexes[i] = i;
+        }
+        sortIndexes(files, indexes);
+        AbstractFile[] copy = files.clone();
+        for (int i = 0; i < n; i++) {
+            files[i] = copy[indexes[i]];
+        }
+    }
+
+    /**
+     * Sorts an array of indexes into <code>files</code> in place by the files they refer to, with the same order as
+     * {@link #compare(AbstractFile, AbstractFile)}. The sort is stable and close to linear for already sorted input.
+     */
+    public void sortIndexes(AbstractFile[] files, int[] indexes) {
+        sortIndexes(files, indexes, true);
+    }
+
+    /** @param allowParallel false to always sort on the calling thread only (tests) */
+    void sortIndexes(AbstractFile[] files, int[] indexes, boolean allowParallel) {
+        if (indexes.length < 2) {
+            return;
+        }
+        Keys keys = new Keys(files);
+        int n = indexes.length;
+        int[] tmp = new int[n];
+        if (allowParallel && n >= PARALLEL_SORT_THRESHOLD && ForkJoinPool.getCommonPoolParallelism() > 1) {
+            // Large folders: sort the halves on several cores (the keys are only read while sorting)
+            ForkJoinPool.commonPool().invoke(keys.new SortTask(indexes, tmp, 0, n));
+        } else {
+            keys.mergeSort(indexes, tmp, 0, n);
+        }
+    }
+
+    /** Ranges larger than this are sorted in parallel */
+    private static final int PARALLEL_SORT_THRESHOLD = 20_000;
+
+    /** Sort keys of a file array, fetched once per file; compare() mirrors {@link FileComparator#compare}. */
+    private final class Keys {
+        private final boolean[] dir;
+        private final boolean[] quickSearchMatch;
+        private final String[] name;
+        private final int[] nameDigit;
+        private final long[] number;
+        private final String[] text;
+        private final int[] textDigit;
+
+        Keys(AbstractFile[] files) {
+            int n = files.length;
+            boolean needDir = directoriesFirst || criterion == SIZE_CRITERION;
+            dir = needDir ? new boolean[n] : null;
+            quickSearchMatch = quickSearch != null ? new boolean[n] : null;
+            name = new String[n];
+            nameDigit = new int[n];
+            boolean numeric = criterion == SIZE_CRITERION || criterion == DATE_CRITERION || criterion == PERMISSIONS_CRITERION;
+            boolean textual = criterion == EXTENSION_CRITERION || criterion == OWNER_CRITERION || criterion == GROUP_CRITERION;
+            number = numeric ? new long[n] : null;
+            text = textual ? new String[n] : null;
+            textDigit = textual ? new int[n] : null;
+            for (int i = 0; i < n; i++) {
+                AbstractFile f = files[i];
+                if (f == null) {
+                    continue;
+                }
+                boolean isDir = needDir && f.isDirectory();
+                if (needDir) {
+                    dir[i] = isDir;
+                }
+                if (quickSearchMatch != null) {
+                    quickSearchMatch[i] = quickSearch.matches(f);
+                }
+                String fileName = f.getName();
+                name[i] = fileName;
+                nameDigit[i] = firstDigitPos(fileName);
+                if (numeric) {
+                    if (criterion == SIZE_CRITERION) {
+                        // Directories have a size of 0, unavailable size (-1) is considered as enormous
+                        long size = isDir ? 0 : f.getSize();
+                        number[i] = size == -1 ? Long.MAX_VALUE : size;
+                    } else if (criterion == DATE_CRITERION) {
+                        number[i] = f.getLastModifiedDate();
+                    } else {
+                        number[i] = f.getPermissions().getIntValue();
+                    }
+                } else if (textual) {
+                    // The extension is derived from the name here (what getExtension() does) rather than asked to the
+                    // file: CachedFile would keep one more String per file of the folder for the rest of its life
+                    String value = criterion == EXTENSION_CRITERION ? AbstractFile.getExtension(fileName)
+                            : criterion == OWNER_CRITERION ? f.getOwner() : f.getGroup();
+                    text[i] = value;
+                    textDigit[i] = firstDigitPos(value);
+                }
+            }
+        }
+
+        private int compareNames(int i1, int i2, boolean ignoreCase) {
+            return compareStrings(name[i1], nameDigit[i1], name[i2], nameDigit[i2], ignoreCase);
+        }
+
+        int compare(int i1, int i2) {
+            if (i1 == i2) {
+                return 0;
+            }
+            if (quickSearchMatch != null) {
+                boolean m1 = quickSearchMatch[i1];
+                boolean m2 = quickSearchMatch[i2];
+                if (m1 && !m2) {
+                    return -1;
+                } else if (m2 && !m1) {
+                    return 1;
+                }
+            }
+            long diff;
+            if (directoriesFirst) {
+                boolean is1Directory = dir[i1];
+                boolean is2Directory = dir[i2];
+                if (is1Directory && !is2Directory) {
+                    return -1;
+                } else if (is2Directory && !is1Directory) {
+                    return 1;
+                }
+                if (foldersAlwaysAlphabetical && is1Directory) {
+                    diff = compareNames(i1, i2, true);
+                    if (diff == 0) {
+                        diff = compareNames(i1, i2, false);
+                    }
+                    return (int) diff;
+                }
+            }
+            if (number != null) {
+                diff = number[i1] - number[i2];
+            } else if (text != null) {
+                String s1 = text[i1];
+                String s2 = text[i2];
+                if (s1 == null || s2 == null) {
+                    diff = s1 == null ? (s2 == null ? 0 : -1) : 1;
+                } else {
+                    diff = compareStrings(s1, textDigit[i1], s2, textDigit[i2], true);
+                }
+            } else {
+                diff = compareNames(i1, i2, true);
+                if (diff == 0) {
+                    diff = compareNames(i1, i2, false);
+                }
+            }
+            if (criterion != NAME_CRITERION && diff == 0) {
+                diff = compareNames(i1, i2, true);
+            }
+            int intValue;
+            if (diff > Integer.MAX_VALUE) {
+                intValue = Integer.MAX_VALUE;
+            } else if (diff < Integer.MIN_VALUE + 1) {
+                intValue = Integer.MIN_VALUE + 1;
+            } else {
+                intValue = (int) diff;
+            }
+            return ascending ? intValue : -intValue;
+        }
+
+        /** Stable merge sort of a[lo, hi), using tmp[lo, hi) as scratch space. */
+        void mergeSort(int[] a, int[] tmp, int lo, int hi) {
+            if (hi - lo <= 12) {
+                for (int i = lo + 1; i < hi; i++) {
+                    int v = a[i];
+                    int j = i - 1;
+                    while (j >= lo && compare(a[j], v) > 0) {
+                        a[j + 1] = a[j];
+                        j--;
+                    }
+                    a[j + 1] = v;
+                }
+                return;
+            }
+            int mid = (lo + hi) >>> 1;
+            mergeSort(a, tmp, lo, mid);
+            mergeSort(a, tmp, mid, hi);
+            merge(a, tmp, lo, mid, hi);
+        }
+
+        /** Merges the sorted ranges a[lo, mid) and a[mid, hi) */
+        void merge(int[] a, int[] tmp, int lo, int mid, int hi) {
+            if (compare(a[mid - 1], a[mid]) <= 0) {
+                return;     // halves are already in order: nothing to merge (keeps sorted input linear)
+            }
+            System.arraycopy(a, lo, tmp, lo, mid - lo);
+            int i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                a[k++] = compare(a[j], tmp[i]) < 0 ? a[j++] : tmp[i++];
+            }
+            while (i < mid) {
+                a[k++] = tmp[i++];
+            }
+        }
+
+        /** Parallel version of {@link #mergeSort}, the two halves of large ranges are sorted concurrently. */
+        final class SortTask extends RecursiveAction {
+            private final int[] a, tmp;
+            private final int lo, hi;
+
+            SortTask(int[] a, int[] tmp, int lo, int hi) {
+                this.a = a;
+                this.tmp = tmp;
+                this.lo = lo;
+                this.hi = hi;
+            }
+
+            @Override
+            protected void compute() {
+                if (hi - lo <= PARALLEL_SORT_THRESHOLD / 2) {
+                    mergeSort(a, tmp, lo, hi);
+                    return;
+                }
+                int mid = (lo + hi) >>> 1;
+                invokeAll(new SortTask(a, tmp, lo, mid), new SortTask(a, tmp, mid, hi));
+                merge(a, tmp, lo, mid, hi);
+            }
+        }
+    }
+
+    /**
+     * Returns true if the given comparator orders files exactly like this one: same criterion, order, folder
+     * options and quick search. (Unlike {@link #equals(Object)} which only looks at the criterion and order.)
+     */
+    public boolean sortsLike(FileComparator other) {
+        return other != null && criterion == other.criterion && ascending == other.ascending
+                && directoriesFirst == other.directoriesFirst && foldersAlwaysAlphabetical == other.foldersAlwaysAlphabetical
+                && quickSearch == other.quickSearch;
+    }
 
     /**
      * Returns true only if the given object is a FileComparator using the same criterion and ascending/descending order.

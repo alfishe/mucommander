@@ -39,13 +39,16 @@ public class FileTableModel extends BaseFileTableModel {
 
     private int columnsVisibilityMask;
 
+    /** Number of cached values per row: every column but the icon */
+    private static final int CACHED_COLUMNS = Column.values().length - 1;
+
 
     /**
      * Creates a new FileTableModel, without any initial current folder.
      */
     public FileTableModel() {
         super();
-        cellValuesCache = new Object[0][Column.values().length-1];
+        cellValuesCache = new Object[0][];
     }
 
 
@@ -61,7 +64,9 @@ public class FileTableModel extends BaseFileTableModel {
      */
     @Override
     protected void initCellValuesCache() {
-        this.cellValuesCache = new Object[getRowCount()][Column.values().length-1];
+        // Rows are allocated when first displayed (see #fillOneCellCache): a large folder is mostly never scrolled
+        // through, one array per file would be memory spent for nothing
+        this.cellValuesCache = new Object[getRowCount()][];
     }
 
 
@@ -76,9 +81,11 @@ public class FileTableModel extends BaseFileTableModel {
         }
 
         columnsVisibilityMask = calcColumnVisibilityMask(fileTable);
+        // Forget the cell values of every file, they are computed again when displayed
+        java.util.Arrays.fill(cellValuesCache, null);
         // Special '..' file
         if (parent != null) {
-            Object[] cell = cellValuesCache[0];
+            Object[] cell = cellValuesCache[0] = new Object[CACHED_COLUMNS];
             cell[Column.NAME.ordinal()-1] = "..";
             cell[Column.SIZE.ordinal()-1] = DIRECTORY_SIZE_STRING;
             currentFolderDateSnapshot = currentFolder.getLastModifiedDate();
@@ -88,19 +95,6 @@ public class FileTableModel extends BaseFileTableModel {
             cell[Column.PERMISSIONS.ordinal()-1] = "";
             cell[Column.OWNER.ordinal()-1] = "";
             cell[Column.GROUP.ordinal()-1] = "";
-        }
-
-        int fileIndex = 0;
-        final int indexOffset = parent == null ? 0 : 1;
-        for (int i = indexOffset; i < len; i++) {
-            int cellIndex = fileIndex + indexOffset;
-            //int cellIndex = fileArrayIndex[fileIndex] + indexOffset;
-            //fillOneCellCache(cellIndex, cellIndex);
-            Object[] cell = cellValuesCache[cellIndex];
-            for (int ci = Column.NAME.ordinal()-1; ci <= Column.GROUP.ordinal()-1; ci++) {
-                cell[ci] = null;
-            }
-            fileIndex++;
         }
     }
 
@@ -120,6 +114,9 @@ public class FileTableModel extends BaseFileTableModel {
     private Object[] fillOneCellCache(int cellIndex, int fileIndex) {
         AbstractFile file = getCachedFileAt(fileIndex);
         Object[] cell = cellValuesCache[cellIndex];
+        if (cell == null) {
+            cell = cellValuesCache[cellIndex] = new Object[CACHED_COLUMNS];
+        }
         cell[Column.NAME.ordinal()-1] = file.getName();
         if (isColumnVisible(Column.SIZE)) {
             cell[Column.SIZE.ordinal() - 1] = getSizeValue(file);
@@ -192,7 +189,7 @@ public class FileTableModel extends BaseFileTableModel {
 
     @Override
     public synchronized Object getValueAt(int rowIndex, int columnIndex) {
-        if (rowIndex >= cellValuesCache.length || columnIndex >= cellValuesCache[rowIndex].length) {
+        if (rowIndex >= cellValuesCache.length || columnIndex >= CACHED_COLUMNS) {
             return null;
         }
         // Need to check that row index is not larger than actual number of rows
@@ -225,7 +222,8 @@ public class FileTableModel extends BaseFileTableModel {
         if (parent != null) {
             index++;
         }
-        Object result = cellValuesCache[index][columnIndex];
+        Object[] cell = cellValuesCache[index];
+        Object result = cell == null ? null : cell[columnIndex];
         if (result == null) {
             result = fillOneCellCache(index, parent != null ? fileIndex + 1 : fileIndex)[columnIndex];
         }

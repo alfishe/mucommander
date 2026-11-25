@@ -13,6 +13,10 @@ import ru.trolsoft.jni.NativeFileUtils;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -78,7 +82,8 @@ public class CachedFile extends ProxyFile {
     private static final int IS_ROOT_VALUE_MASK = 1 << 30;
 
     /** If true, AbstractFile instances returned by this class will be wrapped into CachedFile instances */
-    private static final int RECURSE_INSTANCES_MASK = 1 << 29;
+    // Note: must not share a bit with the masks above (it used to collide with EXISTS_VALUE_MASK)
+    private static final int RECURSE_INSTANCES_MASK = 1 << 31;
 
     /**
      * All boolean values stored here as bits
@@ -91,21 +96,38 @@ public class CachedFile extends ProxyFile {
     
     private long getSize;
     private long getLastModified;
-    private long getCreationDate;
-    private long getLastAccessDate;
     private String getAbsolutePath;
-    private String getCanonicalPath;
     private String getExtension;
     private String getName;
-    private long getFreeSpace;
-    private long getTotalSpace;
     private FilePermissions getPermissions;
     private String getPermissionsString;
     private String getOwner;
     private String getGroup;
     private AbstractFile getParent;
-    private AbstractFile getRoot;
-    private AbstractFile getCanonicalFile;
+
+    /**
+     * Rarely used cached values, kept out of the instance until one of them is needed: a folder of 100,000 files
+     * holds 100,000 CachedFile instances, so every field counts.
+     */
+    private static final class RareValues {
+        long creationDate;
+        long lastAccessDate;
+        long freeSpace;
+        long totalSpace;
+        String canonicalPath;
+        AbstractFile root;
+        AbstractFile canonicalFile;
+    }
+
+    private RareValues rare;
+
+    private RareValues rare() {
+        RareValues r = rare;
+        if (r == null) {
+            r = rare = new RareValues();
+        }
+        return r;
+    }
 
     /**
      * Cached values for <code>isFileOperationSupported</code> method
@@ -204,6 +226,62 @@ public class CachedFile extends ProxyFile {
         }
     }
 
+
+    /** Plain local files can have their attributes read in one lstat call, see {@link #prefetchLocalAttributes()} */
+    private static final boolean LOCAL_PREFETCH_SUPPORTED = !OsFamily.WINDOWS.isCurrent() && !OsFamily.MAC_OS_X.isCurrent();
+
+    private static final int LOCAL_PREFETCH_MASK = DIRECTORY_SET_MASK | EXISTS_SET_MASK | HIDDEN_SET_MASK
+            | SYMLINK_SET_MASK | SIZE_SET_MASK | LAST_MODIFICATION_SET_MASK;
+
+    /**
+     * Reads the attributes that the file table needs for every file (directory, symlink, hidden, exists, size and
+     * date) of a plain local file with a single <code>lstat</code> call, plus a <code>stat</code> for symlinks.
+     * The individual getters would take 4 to 6 system calls per file.
+     * Values are the same as the ones {@link LocalFile} returns: symlinks are followed for everything but
+     * {@link #isSymlink()}, and a broken symlink doesn't exist and has a size and date of 0.
+     *
+     * @return true if the attributes are cached, false if this isn't a plain local file (or it couldn't be read), in
+     * which case nothing has changed and the getters fetch the values lazily as usual
+     */
+    public boolean prefetchLocalAttributes() {
+        if ((bitmask & LOCAL_PREFETCH_MASK) == LOCAL_PREFETCH_MASK) {
+            return true;
+        }
+        if (!LOCAL_PREFETCH_SUPPORTED || file.getClass() != LocalFile.class) {
+            return false;
+        }
+        // Note: not File#toPath(), java.io.File keeps the Path it creates, that would cost memory for every file.
+        // And not getAbsolutePath(), LocalFile's checks whether the file is a directory, that is another stat call.
+        Path path = Path.of(((File) file.getUnderlyingFileObject()).getPath());
+        BasicFileAttributes attrs;
+        try {
+            attrs = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+        boolean symlink = attrs.isSymbolicLink();
+        if (symlink) {
+            try {
+                attrs = Files.readAttributes(path, BasicFileAttributes.class);
+            } catch (IOException | RuntimeException e) {
+                attrs = null;   // broken link
+            }
+        }
+        boolean exists = attrs != null;
+        boolean directory = exists && attrs.isDirectory();
+        getSize = exists ? attrs.size() : 0;
+        getLastModified = exists ? attrs.lastModifiedTime().toMillis() : 0;
+        String name = getName();
+        boolean hidden = name != null && name.startsWith(".");
+
+        int values = bitmask & ~(DIRECTORY_VALUE_MASK | EXISTS_VALUE_MASK | HIDDEN_VALUE_MASK | SYMLINK_VALUE_MASK);
+        if (directory) values |= DIRECTORY_VALUE_MASK;
+        if (exists) values |= EXISTS_VALUE_MASK;
+        if (hidden) values |= HIDDEN_VALUE_MASK;
+        if (symlink) values |= SYMLINK_VALUE_MASK;
+        bitmask = values | LOCAL_PREFETCH_MASK;
+        return true;
+    }
 
     /**
      * Creates a CachedFile instance for each of the AbstractFile instances in the given array.
@@ -307,19 +385,19 @@ public class CachedFile extends ProxyFile {
     @Override
     public long getCreationDate() throws IOException {
         if ((bitmask & CREATION_DATE_SET_MASK) == 0) {
-            getCreationDate = file.getCreationDate();
+            rare().creationDate = file.getCreationDate();
             bitmask |= CREATION_DATE_SET_MASK;
         }
-        return getCreationDate;
+        return rare().creationDate;
     }
 
     @Override
     public long getLastAccessDate() throws IOException {
         if ((bitmask & LAST_ACCESS_SET_MASK) == 0) {
-            getLastAccessDate = file.getLastAccessDate();
+            rare().lastAccessDate = file.getLastAccessDate();
             bitmask |= LAST_ACCESS_SET_MASK;
         }
-        return getLastAccessDate;
+        return rare().lastAccessDate;
     }
 
     @Override
@@ -415,10 +493,10 @@ public class CachedFile extends ProxyFile {
     @Override
     public String getCanonicalPath() {
         if ((bitmask & CANONICAL_PATH_SET_MASK) == 0) {
-            getCanonicalPath = file.getCanonicalPath();
+            rare().canonicalPath = file.getCanonicalPath();
             bitmask |= CANONICAL_PATH_SET_MASK;
         }
-        return getCanonicalPath;
+        return rare().canonicalPath;
     }
 
     @Override
@@ -442,19 +520,19 @@ public class CachedFile extends ProxyFile {
     @Override
     public long getFreeSpace() throws IOException {
         if ((bitmask & FREE_SPACE_SET_MASK) == 0) {
-            getFreeSpace = file.getFreeSpace();
+            rare().freeSpace = file.getFreeSpace();
             bitmask |= FREE_SPACE_SET_MASK;
         }
-        return getFreeSpace;
+        return rare().freeSpace;
     }
 
     @Override
     public long getTotalSpace() throws IOException {
         if ((bitmask & TOTAL_SPACE_SET_MASK) == 0) {
-            getTotalSpace = file.getTotalSpace();
+            rare().totalSpace = file.getTotalSpace();
             bitmask |= TOTAL_SPACE_SET_MASK;
         }
-        return getTotalSpace;
+        return rare().totalSpace;
     }
 
     @Override
@@ -542,33 +620,34 @@ public class CachedFile extends ProxyFile {
     @Override
     public AbstractFile getRoot() {
         if ((bitmask & GET_ROOT_SET_MASK) == 0) {
-            getRoot = file.getRoot();
+            rare().root = file.getRoot();
             // create a CachedFile instance around the file if recursion is enabled
             if ((bitmask & RECURSE_INSTANCES_MASK) != 0) {
-                getRoot = new CachedFile(getRoot, true);
+                rare().root = new CachedFile(rare().root, true);
             }
             bitmask |= GET_ROOT_SET_MASK;
         }
-        return getRoot;
+        return rare().root;
     }
 
     @Override
     public AbstractFile getCanonicalFile() {
         if ((bitmask & CANONICAL_FILE_SET_MASK) == 0) {
-            getCanonicalFile = file.getCanonicalFile();
+            AbstractFile canonical = file.getCanonicalFile();
             // create a CachedFile instance around the file if recursion is enabled
             if ((bitmask & RECURSE_INSTANCES_MASK) != 0) {
                 // AbstractFile#getCanonicalFile() may return 'this' if the file is not a symlink. In that case,
-                // no need to create a new CachedFile, simply use this one. 
-                if (getCanonicalFile == file) {
-                    getCanonicalFile = this;
-                } else {
-                    getCanonicalFile = new CachedFile(getCanonicalFile, true);
+                // no need to create a new CachedFile, simply use this one.
+                canonical = canonical == file ? this : new CachedFile(canonical, true);
             }
+            // The common case (not a symlink) is stored as null, so that it costs no memory
+            if (canonical != this) {
+                rare().canonicalFile = canonical;
             }
             bitmask |= CANONICAL_FILE_SET_MASK;
         }
-        return getCanonicalFile;
+        RareValues r = rare;
+        return r == null || r.canonicalFile == null ? this : r.canonicalFile;
     }
 
 

@@ -461,6 +461,20 @@ import java.net.MalformedURLException;
     // Overridden methods //
     ////////////////////////
 
+    /**
+     * Returns the type of a listed entry without letting one inaccessible entry fail the whole listing: on Windows the
+     * server root lists administrative shares (ADMIN$, C$...) that a non-admin login can't connect to, and jCIFS reports
+     * "Access is denied" for them as an authentication error. Such entries are kept as regular disk shares; opening one
+     * reports the error for that share only.
+     */
+    private static int getTypeOf(SmbFile smbFile) {
+        try {
+            return smbFile.getType();
+        } catch (SmbException e) {
+            return SmbFile.TYPE_SHARE;
+        }
+    }
+
     @Override
     public AbstractFile[] ls(FilenameFilter filenameFilter) throws IOException {
         try {
@@ -475,7 +489,7 @@ import java.net.MalformedURLException;
             int nbSmbFilesToExclude = 0;
             int smbFileType;
             for (SmbFile smbFile1 : smbFiles) {
-                smbFileType = smbFile1.getType();
+                smbFileType = getTypeOf(smbFile1);
                 if (smbFileType == SmbFile.TYPE_PRINTER || smbFileType == SmbFile.TYPE_NAMED_PIPE || smbFileType == SmbFile.TYPE_COMM)
                     nbSmbFilesToExclude++;
             }
@@ -488,7 +502,7 @@ import java.net.MalformedURLException;
 
             for (SmbFile smbFile1 : smbFiles) {
                 smbFile = smbFile1;
-                smbFileType = smbFile.getType();
+                smbFileType = getTypeOf(smbFile);
                 if (smbFileType == SmbFile.TYPE_PRINTER || smbFileType == SmbFile.TYPE_NAMED_PIPE || smbFileType == SmbFile.TYPE_COMM)
                     continue;
 

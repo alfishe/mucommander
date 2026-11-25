@@ -30,7 +30,8 @@ import java.net.MalformedURLException;
  * The special 'smb://' URL represents the SMB root and lists all workgroups that are available on the network,
  * akin to Windows' network neighborhood.
  * <p>
- * Access to SMB files is provided by the <code>jCIFS</code> library distributed under the LGPL license.
+ * Access to SMB files is provided by the <code>jCIFS</code> library (codelibs fork of jcifs-ng, SMB1-SMB3.1.1)
+ * distributed under the LGPL license.
  * The {@link #getUnderlyingFileObject()} method allows to retrieve a <code>jcifs.smb.SmbFile</code> instance
  * corresponding to this <code>SMBFile</code>.
  *
@@ -113,7 +114,7 @@ import java.net.MalformedURLException;
     private static SmbFile createSmbFile(FileURL url) throws MalformedURLException {
         Credentials credentials = url.getCredentials();
         if (credentials == null)
-            return new SmbFile(url.toString(false));
+            return new SmbFile(url.toString(false), SMBProtocolProvider.getBaseContext());
 
         // Extract the domain (if any) from the username
         String login = credentials.getLogin();
@@ -130,7 +131,8 @@ import java.net.MalformedURLException;
         // The reason for doing this rather than using the SmbFile(String) constructor is that SmbFile uses java.net.URL
         // for the URL parsing which is unable to properly parse urls where the password contains a '@' character,
         // such as smb://user:p@ssword@host/path . 
-        return new SmbFile(url.toString(false), new NtlmPasswordAuthentication(domain, login, credentials.getPassword()));
+        return new SmbFile(url.toString(false), SMBProtocolProvider.getBaseContext()
+                .withCredentials(new NtlmPasswordAuthenticator(domain, login, credentials.getPassword())));
     }
 
 
@@ -171,7 +173,8 @@ import java.net.MalformedURLException;
      * @param period time period during which attributes values are cached, in milliseconds
      */
     static void setAttributeCachingPeriod(long period) {
-        jcifs.Config.setProperty("jcifs.smb.client.attrExpirationPeriod", ""+period);
+        System.setProperty("jcifs.smb.client.attrExpirationPeriod", ""+period);
+        SMBProtocolProvider.resetBaseContext();
     }
 
 

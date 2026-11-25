@@ -403,12 +403,12 @@ public class TcPreferences implements TcPreferencesAPI {
 	public static final String SMB_SECTION                        = "smb";
 	/** Controls the authentication protocol to use when connecting to SMB servers. */
 	public static final String SMB_LM_COMPATIBILITY               = SMB_SECTION + '.' + "lm_compatibility";
-	/** Default value for {@link #SMB_LM_COMPATIBILITY}. */
-	public static final int DEFAULT_SMB_LM_COMPATIBILITY          = 0;
+	/** Default value for {@link #SMB_LM_COMPATIBILITY}: 3 = NTLMv2 (modern servers reject LM/NTLMv1). */
+	public static final int DEFAULT_SMB_LM_COMPATIBILITY          = 3;
 	/** Controls the authentication protocol to use when connecting to SMB servers. */
 	public static final String SMB_USE_EXTENDED_SECURITY          = SMB_SECTION + '.' + "use_extended_security";
-	/** Default value for {@link #SMB_USE_EXTENDED_SECURITY}. */
-	public static final boolean DEFAULT_SMB_USE_EXTENDED_SECURITY = false;
+	/** Default value for {@link #SMB_USE_EXTENDED_SECURITY}: SMB2/SMB3 require extended security (SPNEGO). */
+	public static final boolean DEFAULT_SMB_USE_EXTENDED_SECURITY = true;
 
     // - File group masks ----------------------------------------------------
     // -----------------------------------------------------------------------

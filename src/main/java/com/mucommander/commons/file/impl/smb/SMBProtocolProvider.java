@@ -3,6 +3,12 @@ package com.mucommander.commons.file.impl.smb;
 import com.mucommander.commons.file.AbstractFile;
 import com.mucommander.commons.file.FileURL;
 import com.mucommander.commons.file.ProtocolProvider;
+import java.util.Properties;
+
+import jcifs.CIFSContext;
+import jcifs.CIFSException;
+import jcifs.config.PropertyConfiguration;
+import jcifs.context.BaseContext;
 import jcifs.smb.SmbFile;
 
 import java.io.IOException;
@@ -38,6 +44,34 @@ public class SMBProtocolProvider implements ProtocolProvider {
         System.setProperty("jcifs.smb.client.dfs.disabled", "true");
     }
 
+    /** Shared jCIFS context (connection pool + configuration); credentials are layered on top per file. */
+    private static CIFSContext baseContext;
+
+    /**
+     * Returns the shared jCIFS context, creating it on first use from the <code>jcifs.*</code> system properties.
+     * SMB2/SMB3 are enabled (up to SMB 3.1.1) with SMB1 as a fallback for old servers: jCIFS 1.x only spoke SMB1,
+     * which modern Windows/Samba/NAS servers have disabled, so connecting silently failed after the login dialog.
+     */
+    static synchronized CIFSContext getBaseContext() {
+        if (baseContext == null) {
+            Properties props = new Properties();
+            props.putAll(System.getProperties());
+            props.putIfAbsent("jcifs.smb.client.minVersion", "SMB1");
+            props.putIfAbsent("jcifs.smb.client.maxVersion", "SMB311");
+            try {
+                baseContext = new BaseContext(new PropertyConfiguration(props));
+            } catch (CIFSException e) {
+                throw new IllegalStateException("Invalid jCIFS configuration", e);
+            }
+        }
+        return baseContext;
+    }
+
+    /** Drops the shared context so that changed <code>jcifs.*</code> properties take effect on next use. */
+    static synchronized void resetBaseContext() {
+        baseContext = null;
+    }
+
 
     /**
      * Sets the authentication protocol to use when connecting to SMB servers. This configuration method must be called
@@ -61,6 +95,7 @@ public class SMBProtocolProvider implements ProtocolProvider {
         // Since jCIFS 1.3.0, the default is to use NTLM v2 authentication (value=3).
         // Note: jCIFS configuration is unfortunately global and cannot be set per connection.
         System.setProperty("jcifs.smb.lmCompatibility", Integer.toString(value));
+        resetBaseContext();
     }
 
     /**
@@ -78,6 +113,7 @@ public class SMBProtocolProvider implements ProtocolProvider {
         // SMB servers such as Samba 3.0.
         // Note jCIFS configuration is unfortunately global and cannot be set per connection.
         System.setProperty("jcifs.smb.client.useExtendedSecurity", Boolean.toString(value));
+        resetBaseContext();
     }
 
 

@@ -19,7 +19,7 @@
 package com.mucommander.ui.action.impl;
 
 import com.mucommander.ui.action.*;
-import com.mucommander.ui.dialog.auth.EditCredentialsDialog;
+import com.mucommander.ui.dialog.auth.CredentialsManagerDialog;
 import com.mucommander.ui.main.MainFrame;
 
 import javax.swing.KeyStroke;
@@ -40,7 +40,7 @@ public class EditCredentialsAction extends TcAction {
 
     @Override
     public void performAction() {
-        new EditCredentialsDialog(mainFrame);
+        new CredentialsManagerDialog(mainFrame);
     }
 
 	@Override

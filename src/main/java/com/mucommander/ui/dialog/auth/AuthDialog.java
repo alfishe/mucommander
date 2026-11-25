@@ -19,6 +19,8 @@
 
 package com.mucommander.ui.dialog.auth;
 
+import com.mucommander.auth.Account;
+import com.mucommander.auth.AccountStore;
 import com.mucommander.auth.CredentialsManager;
 import com.mucommander.auth.CredentialsMapping;
 import com.mucommander.commons.file.Credentials;
@@ -65,6 +67,8 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
     private final JPasswordField passwordField;
 
     private final JCheckBox cbSaveCredentials;
+    /** Saved accounts to pick from (first item: a new login), null if there are no saved accounts */
+    private JComboBox<Object> accountComboBox;
 
     private CredentialsMapping selectedCredentialsMapping;
     private boolean guestCredentialsSelected;
@@ -120,6 +124,17 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
         // Server URL for which the user has to authenticate
         compPanel.addRow(i18n("auth_dialog.server"), new JLabel(fileURL.toString(false)), 10);
 
+        // Saved accounts of the credentials manager, to reuse one for this server
+        java.util.List<Account> accounts = AccountStore.getAccounts();
+        if (!accounts.isEmpty()) {
+            accountComboBox = new JComboBox<>();
+            accountComboBox.addItem(i18n("auth_dialog.new_login"));
+            for (Account account : accounts) {
+                accountComboBox.addItem(account);
+            }
+            compPanel.addRow(i18n("auth_dialog.account"), accountComboBox, 5);
+        }
+
         // Login field: create either a text field or an editable combo box, depending on whether
         // CredentialsManager returned matches (-> combo box) or not (-> text field).
         int nbCredentials = credentialsMappings.length;
@@ -167,7 +182,8 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
 
         yPanel.add(compPanel);
 
-        this.cbSaveCredentials = new JCheckBox(i18n("auth_dialog.store_credentials"), saveCredentialsCheckBoxSelected);
+        this.cbSaveCredentials = new JCheckBox(i18n(AccountStore.STORAGE_KEYRING.equals(AccountStore.currentStorage())
+                ? "auth_dialog.store_credentials_keyring" : "auth_dialog.store_credentials_file"), saveCredentialsCheckBoxSelected);
         yPanel.add(cbSaveCredentials);
 
         yPanel.addSpace(5);
@@ -199,6 +215,20 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
                 passwordField.setEnabled(false);
                 cbSaveCredentials.setEnabled(false);
             }
+        }
+
+        // Pre-select the saved account of the pre-filled credentials, then follow the user's choice
+        if (accountComboBox != null) {
+            // The saved account of the best match, as long as the login shown is its login (after a failed login
+            // the dialog shows the rejected credentials: keep them linked to the account so that the corrected
+            // password updates it)
+            Account preselected = credentialsMappings.length > 0
+                    ? AccountStore.getAccount(credentialsMappings[0].getAccountId()) : null;
+            if (preselected != null && preselected.getLogin().equals(loginField.getText())) {
+                accountComboBox.setSelectedItem(preselected);
+                cbSaveCredentials.setSelected(true);
+            }
+            accountComboBox.addActionListener(this);
         }
 
         // Add OK/Cancel buttons
@@ -264,7 +294,14 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
             guestCredentialsSelected = false;
 
             boolean isPersistent = cbSaveCredentials.isSelected();
-            selectedCredentialsMapping = new CredentialsMapping(enteredCredentials, fileURL, isPersistent);
+            // Bind to the picked account (its password is updated if it was changed here); a different login means
+            // the user typed new credentials
+            Account account = getSelectedAccount();
+            String accountId = account != null && account.getLogin().equals(enteredCredentials.getLogin()) ? account.getId() : null;
+            selectedCredentialsMapping = new CredentialsMapping(enteredCredentials, fileURL, isPersistent, accountId);
+            if (accountId != null) {
+                return;
+            }
 
             // Look for an existing matching CredentialsMapping instance to re-use the realm which may contain
             // connection properties.
@@ -273,7 +310,7 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
                     // create a new CredentialsMapping instance in case the 'isPersistent' flag has changed.
                     // (original credentials may have originally been added as 'volatile' and then made persistent by
                     // ticking the checkbox, or vice-versa)
-                    selectedCredentialsMapping = new CredentialsMapping(cm.getCredentials(), cm.getRealm(), isPersistent);
+                    selectedCredentialsMapping = new CredentialsMapping(cm.getCredentials(), cm.getRealm(), isPersistent, cm.getAccountId());
                     break;
                 }
             }
@@ -290,6 +327,8 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
             dispose();
         } else if (source == btnCancel) {
             dispose();
+        } else if (source == accountComboBox) {
+            accountSelected();
         } else if (source == guestRadioButton) {
             loginField.setEnabled(false);
             passwordField.setEnabled(false);
@@ -304,6 +343,33 @@ public class AuthDialog extends FocusDialog implements ActionListener, EditableC
         }
     }
 
+
+    private Account getSelectedAccount() {
+        if (accountComboBox == null || guestCredentialsSelected) {
+            return null;
+        }
+        Object item = accountComboBox.getSelectedItem();
+        return item instanceof Account ? (Account) item : null;
+    }
+
+    /** Fills the login and password fields with the picked account; "new login" clears the password. */
+    private void accountSelected() {
+        Account account = getSelectedAccount();
+        if (account == null) {
+            passwordField.setText("");
+            loginField.selectAll();
+            FocusRequester.requestFocus(loginField);
+            return;
+        }
+        if (userRadioButton != null && !userRadioButton.isSelected()) {
+            userRadioButton.doClick();
+        }
+        loginField.setText(account.getLogin());
+        String password = AccountStore.getPassword(account);
+        passwordField.setText(password == null ? "" : password);
+        cbSaveCredentials.setSelected(true);
+        FocusRequester.requestFocus(password == null ? passwordField : btnOk);
+    }
 
     @Override
     public void comboBoxSelectionChanged(SaneComboBox source) {

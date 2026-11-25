@@ -26,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.mucommander.commons.file.AbstractFile;
+import com.mucommander.commons.file.AuthException;
 import com.mucommander.commons.file.FileURL;
 import com.mucommander.core.FolderChangeMonitor;
 import com.mucommander.core.GlobalLocationHistory;
@@ -71,8 +72,30 @@ public class LocationManager {
      * @param folder the {@link AbstractFile} that is going to be presented in the {@link FolderPanel}
      */
     public void setCurrentFolder(AbstractFile folder, AbstractFile fileToSelect, boolean changeLockedTab) {
-        AbstractFile[] children = safeLs(folder, configurableFolderFilter);
+        show(folder, safeLs(folder, configurableFolderFilter), fileToSelect, changeLockedTab);
+    }
 
+    /**
+     * Same as {@link #setCurrentFolder(AbstractFile, AbstractFile, boolean)}, except that a listing rejected because
+     * of the credentials is reported instead of showing an empty folder, so that the caller can ask for other
+     * credentials. Nothing is changed in that case.
+     *
+     * @throws AuthException if the folder can't be listed with the credentials of its URL
+     */
+    public void setCurrentFolderOrAuthFail(AbstractFile folder, AbstractFile fileToSelect, boolean changeLockedTab) throws AuthException {
+        AbstractFile[] children;
+        try {
+            children = folder.ls(configurableFolderFilter);
+        } catch (AuthException e) {
+            throw e;
+        } catch (Exception e) {
+            LOGGER.error("Couldn't ls children of " + folder.getAbsolutePath() + ", error: " + e.getMessage());
+            children = new AbstractFile[0];
+        }
+        show(folder, children, fileToSelect, changeLockedTab);
+    }
+
+    private void show(AbstractFile folder, AbstractFile[] children, AbstractFile fileToSelect, boolean changeLockedTab) {
         folderPanel.setCurrentFolder(folder, children, fileToSelect, changeLockedTab);
 
     	this.currentFolder = folder;

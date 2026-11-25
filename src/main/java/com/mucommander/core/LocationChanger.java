@@ -328,12 +328,14 @@ public class LocationChanger {
      * @param fileToSelect file to be selected after the folder has been refreshed (if it exists in the folder), can be null in which case FileTable rules will be used to select current file
      * @param changeLockedTab - flag that indicates whether to change the presented folder in the currently selected tab although it's locked
      */
-    private void setCurrentFolder(AbstractFile folder, AbstractFile fileToSelect, boolean changeLockedTab) {
+    private void setCurrentFolder(AbstractFile folder, AbstractFile fileToSelect, boolean changeLockedTab) throws AuthException {
     	// Update the timestamp right before the folder is set in case FolderChangeMonitor checks the timestamp
         // while FileTable#setCurrentFolder is being called. 
         lastFolderChangeTime = System.currentTimeMillis();
         
-    	locationManager.setCurrentFolder(folder, fileToSelect, changeLockedTab);
+        // A rejected login surfaces here (some servers only check credentials when listing): let the caller ask
+        // for other credentials instead of showing an empty folder
+    	locationManager.setCurrentFolderOrAuthFail(folder, fileToSelect, changeLockedTab);
     }
 
     /**
@@ -624,9 +626,16 @@ public class LocationChanger {
 			boolean guestCredentialsSelected = false;
 
             boolean userCancelled = false;
+			CredentialsMapping autoLogin;
 			if (credentialsMapping != null) {
 				newCredentialsMapping = credentialsMapping;
 				CredentialsManager.authenticate(folderURL, newCredentialsMapping);
+			} else if ((autoLogin = getAutoLoginCredentials()) != null) {
+				// The credentials manager knows this location: connect without asking. If the saved password is
+				// rejected, the AuthException handler below pops the authentication dialog.
+				newCredentialsMapping = autoLogin;
+				CredentialsManager.authenticate(folderURL, newCredentialsMapping);
+				folder = null;
 			} else if (shouldDisplayAuthDialog()) {
 				AuthDialog authDialog = popAuthDialog(folderURL, false, null);
 				newCredentialsMapping = authDialog.getCredentialsMapping();
@@ -906,6 +915,13 @@ public class LocationChanger {
 
             this.folder = file;
             return false;
+        }
+
+        private CredentialsMapping getAutoLoginCredentials() {
+            if (folderURL.containsCredentials() || folderURL.getAuthenticationType() == AuthenticationType.NO_AUTHENTICATION) {
+                return null;
+            }
+            return CredentialsManager.getAutoLoginCredentials(folderURL);
         }
 
         private boolean shouldDisplayAuthDialog() {

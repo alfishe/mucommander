@@ -61,7 +61,16 @@ class CredentialsParser extends DefaultHandler implements CredentialsConstants {
     /**
      * Creates a new CredentialsParser.
      */
-    public CredentialsParser() {
+    /** Receives every credentials entry read from the file */
+    private final java.util.function.Consumer<CredentialsMapping> consumer;
+
+    /**
+     * Creates a parser for the legacy credentials.xml format.
+     *
+     * @param consumer called with each (persistent) credentials entry read from the file
+     */
+    public CredentialsParser(java.util.function.Consumer<CredentialsMapping> consumer) {
+        this.consumer = consumer;
     }
 
 
@@ -136,12 +145,12 @@ class CredentialsParser extends DefaultHandler implements CredentialsConstants {
                 try {
                     password = XORCipher.decryptXORBase64(password);
                 } catch (IOException e) {
-                    getLogger().info("Password could not be decrypted: " + password + ", credentials will be ignored");
+                    getLogger().info("Password could not be decrypted, credentials for " + url + " will be ignored");
                 return;
             }
 
             // Add credentials to persistent credentials list
-            CredentialsManager.getPersistentCredentialMappings().add(new CredentialsMapping(new Credentials(login, password), url, true));
+            consumer.accept(new CredentialsMapping(new Credentials(login, password), url, true));
                 break;
             case ELEMENT_URL:
                 try {

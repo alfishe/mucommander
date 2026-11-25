@@ -27,16 +27,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.mucommander.PlatformManager;
-import com.mucommander.commons.collections.AlteredVector;
-import com.mucommander.commons.collections.VectorChangeListener;
 import com.mucommander.commons.file.AbstractFile;
 import com.mucommander.commons.file.Authenticator;
 import com.mucommander.commons.file.Credentials;
 import com.mucommander.commons.file.FileFactory;
 import com.mucommander.commons.file.FileURL;
-import com.mucommander.commons.file.util.Chmod;
-import com.mucommander.commons.runtime.OsFamily;
-import com.mucommander.io.backup.BackupOutputStream;
 
 
 /**
@@ -47,9 +42,9 @@ import com.mucommander.io.backup.BackupOutputStream;
  * <p>
  * Two types of {@link CredentialsMapping} are used:
  * <ul>
- *  <li>persistent credentials: stored in an XML file when the application terminates, and loaded the next time the
- * application is started.</li>
- *  <li>volatile credentials: lost when the application terminates.</li>
+ *  <li>persistent credentials: saved accounts bound to locations, managed by {@link AccountStore} (passwords in the
+ * desktop keyring, or in the accounts file when no keyring is available).</li>
+ *  <li>volatile credentials: entered during this session without saving them, lost when the application terminates.</li>
  * </ul>
  *
  * @author Maxence Bernard
@@ -60,9 +55,6 @@ public class CredentialsManager {
     /** Contains volatile CredentialsMapping instances, lost when the application terminates */
     private static final List<CredentialsMapping> volatileCredentialMappings = new Vector<>();
 
-    /** Contains persistent CredentialsMapping instances, stored to an XML file when the application
-     * terminates, and loaded the next time the application is started */
-    private static final AlteredVector<CredentialsMapping> persistentCredentialMappings = new AlteredVector<>();
 
     /** Singleton CredentialsManagerAuthenticator instance */
     private final static Authenticator AUTHENTICATOR = new CredentialsManagerAuthenticator();
@@ -71,36 +63,16 @@ public class CredentialsManager {
     private static AbstractFile credentialsFile;
 
     /** Default credentials file name */
-    private static final String DEFAULT_CREDENTIALS_FILE_NAME = "credentials.xml";
+    private static final String DEFAULT_CREDENTIALS_FILE_NAME = "accounts.xml";
 
-    /** Tracks changes made to the persistent credentials vector.
-     * We keep a reference to the listener so it doesn't get garbage collected. */
-    private static final VectorChangeListener PERSISTENT_CREDENTIALS_VECTOR_CHANGE_LISTENER;    // Don't remove me!
+    /** Credentials file of older versions, migrated to {@link AccountStore} on first start */
+    private static final String LEGACY_CREDENTIALS_FILE_NAME = "credentials.xml";
 
-    /** True when changes were made after the credentials file was last saved */
-    private static boolean saveNeeded;
 
     /** create a singleton instance, needs to be referenced so that it's not garbage collected (AlteredVector
       * stores VectorChangeListener as weak references) */
     private static final CredentialsManager singleton = new CredentialsManager();
 
-    static {
-        // Listen to changes made to the persistent entries vector.
-        // Note: we must keep a reference to the listener, as it would otherwise be garbage collected.
-        persistentCredentialMappings.addVectorChangeListener(PERSISTENT_CREDENTIALS_VECTOR_CHANGE_LISTENER = new VectorChangeListener() {
-            public void elementsAdded(int startIndex, int nbAdded) {
-                saveNeeded = true;
-            }
-
-            public void elementsRemoved(int startIndex, int nbRemoved) {
-                saveNeeded = true;
-            }
-
-            public void elementChanged(int index) {
-                saveNeeded = true;
-            }
-        });
-    }
 
 
     /**
@@ -160,15 +132,10 @@ public class CredentialsManager {
      * @throws Exception if an error occurs while loading the credentials file.
      */
     public static void loadCredentials() throws Exception {
-        AbstractFile credentialsFile = getCredentialsFile();
-        if (credentialsFile.exists()) {
-            getLogger().debug("Found credentials file: "+credentialsFile.getAbsolutePath());
-            // Parse the credentials file
-            new CredentialsParser().parse(credentialsFile);
-            getLogger().debug("Credentials file loaded.");
-        } else {
-            getLogger().debug("No credentials file found at " + credentialsFile.getAbsolutePath());
-        }
+        AbstractFile accountsFile = getCredentialsFile();
+        File file = new File(accountsFile.getAbsolutePath());
+        File legacyFile = new File(file.getParentFile(), LEGACY_CREDENTIALS_FILE_NAME);
+        AccountStore.load(file, legacyFile);
     }
 
     /**
@@ -180,33 +147,9 @@ public class CredentialsManager {
      * @throws IOException if an I/O error occurs.
      */
     public static void writeCredentials(boolean forceWrite) throws IOException {
-        // Write credentials file only if changes were made to persistent entries since last write, or if write is forced
-        if (!(forceWrite || saveNeeded)) {
-            return;
-        }
-
-        BackupOutputStream out = null;
-        try {
-            credentialsFile = getCredentialsFile();
-            CredentialsWriter.write(out = new BackupOutputStream(credentialsFile));
-            saveNeeded = false;
-        } finally {
-            if (out != null) {
-                // TODO autoclosable
-                try {
-                    out.close();
-                } catch(Exception ignore) {}
-            }
-        }
-
-        // Under UNIX-based systems, change the credentials file's permissions so that the file can't be read by
-        // 'group' and 'other'.
-        boolean fileSecured = !OsFamily.getCurrent().isUnixBased() || Chmod.chmod(credentialsFile, 0600);     // rw-------
-
-        if (fileSecured) {
-            getLogger().debug("Credentials file saved successfully.");
-        } else {
-            getLogger().warn("Credentials file could not be chmod!");
+        // AccountStore saves every change immediately, nothing is pending unless a write is forced
+        if (forceWrite) {
+            AccountStore.save();
         }
     }
 
@@ -259,7 +202,7 @@ public class CredentialsManager {
         List<CredentialsMapping> matchesV = new ArrayList<>();
 
         findMatches(location, volatileCredentialMappings, matchesV);
-        findMatches(location, persistentCredentialMappings, matchesV);
+        matchesV.addAll(AccountStore.matchingMappings(location));
 
         // Find the best match and move it at the first position in the vector
         int bestMatchIndex = getBestMatchIndex(location, matchesV);
@@ -293,18 +236,15 @@ public class CredentialsManager {
         boolean persist = credentialsMapping.isPersistent();
 
         getLogger().trace("called, realm="+ credentialsMapping.getRealm()+" isPersistent="+ credentialsMapping.isPersistent());
-        getLogger().trace("before, persistentCredentials="+ persistentCredentialMappings);
         getLogger().trace("before, volatileCredentials="+ volatileCredentialMappings);
 
         if (persist) {
-            replaceListElement(persistentCredentialMappings, credentialsMapping);
+            AccountStore.remember(credentialsMapping);
             volatileCredentialMappings.remove(credentialsMapping);
         } else {
             replaceListElement(volatileCredentialMappings, credentialsMapping);
-            persistentCredentialMappings.removeElement(credentialsMapping);
         }
 
-        getLogger().trace("after, persistentCredentials="+ persistentCredentialMappings);
         getLogger().trace("after, volatileCredentials="+ volatileCredentialMappings);
     }
 
@@ -481,15 +421,28 @@ public class CredentialsManager {
 
 
     /**
-     * Returns the list of known persistent {@link CredentialsMapping}, stored in an {@link AlteredVector}.
-     * <p>
-     * Any changes made to the Vector will be detected and will yield to writing the credentials file when
-     * {@link #writeCredentials(boolean)} is called with false.
+     * Returns the credentials to use to open the given location without asking the user, or <code>null</code> if
+     * the user has to be asked:
+     * <ol>
+     *  <li>the account bound to the location (see {@link AccountStore#findBinding(FileURL)}), if its password is known,</li>
+     *  <li>else credentials entered (without saving them) for the same realm earlier in this session.</li>
+     * </ol>
      *
-     * @return the list of known persistent {@link CredentialsMapping}.
+     * @param location the location about to be opened
+     * @return credentials to authenticate with, null if none apply
      */
-    public static AlteredVector<CredentialsMapping> getPersistentCredentialMappings() {
-        return persistentCredentialMappings;
+    public static CredentialsMapping getAutoLoginCredentials(FileURL location) {
+        CredentialsMapping saved = AccountStore.autoLogin(location);
+        if (saved != null) {
+            return saved;
+        }
+        FileURL realm = location.getRealm();
+        for (CredentialsMapping cm : volatileCredentialMappings) {
+            if (cm.getRealm().equals(realm, false, false)) {
+                return cm;
+            }
+        }
+        return null;
     }
 
 

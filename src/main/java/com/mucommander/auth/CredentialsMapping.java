@@ -40,6 +40,9 @@ public final class CredentialsMapping {
     /** Should these credentials be saved to disk ? */
     private final boolean isPersistent;
 
+    /** Id of the saved {@link Account} these credentials come from / should be saved to, null if none */
+    private final String accountId;
+
     
     /**
      * Creates a new CredentialsMapping instance that associates the specified credentials with the given location.
@@ -50,9 +53,26 @@ public final class CredentialsMapping {
      * application terminates.
      */
     public CredentialsMapping(Credentials credentials, FileURL realm, boolean isPersistent) {
+        this(credentials, realm, isPersistent, null);
+    }
+
+    /**
+     * Creates credentials linked to a saved {@link Account} of {@link AccountStore}.
+     *
+     * @param accountId the account's id, null if not linked to an account
+     */
+    public CredentialsMapping(Credentials credentials, FileURL realm, boolean isPersistent, String accountId) {
         this.credentials = credentials;
         this.isPersistent = isPersistent;
         this.realm = realm.getRealm();
+        this.accountId = accountId;
+    }
+
+    /**
+     * Returns the id of the saved {@link Account} these credentials belong to, null if none.
+     */
+    public String getAccountId() {
+        return accountId;
     }
 
     /**

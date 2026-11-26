@@ -33,11 +33,43 @@ Large folders (100,000+ files)
 - Heap starts small (32 MB) and grows only when needed, up to 512 MB (was a fixed 128 MB, which ran out of
   memory at 100k files)
 
+System requirements
+===================
+
+- Java 21 or newer (JRE is enough to run)
+- Linux, Windows or macOS
+- Memory: the heap starts at 32 MB and grows on demand up to 512 MB (about a million listed files over both panels)
+- Optional, Linux: `secret-tool` (package `libsecret-tools` on Debian/Ubuntu) and a running Secret Service
+  (GNOME Keyring, KWallet, KeePassXC) to keep passwords in the desktop keyring. Without it, passwords are stored
+  in `~/.trolcommander/accounts.xml` (owner-only file, weak encryption)
+
+Build requirements
+==================
+
+- JDK 21 or newer
+- Nothing else to install: the Gradle wrapper (Gradle 8.14) and the Kotlin plugin are downloaded automatically
+- Internet access on the first build to fetch dependencies from Maven Central (a few libraries are bundled in `lib/`)
+
 How to build
 ============
 
-Build jar file:
-`gradlew clean build`
+Build the application (single jar with all dependencies, `build/libs/trolcommander-1.0.0.jar`):
+`./gradlew shadowJar`
+
+Build a runnable install with launcher scripts (`build/install/trolcommander-shadow/bin/trolcommander`):
+`./gradlew installShadowDist`
+
+Run from the sources:
+`./gradlew runApp`
+
+Run the tests:
+`./gradlew test`
+
+Full build (compile, tests, distributions):
+`./gradlew clean build`
+
+Note: start the application with the launcher scripts (or `runApp`) rather than `java -jar`: they pass the JVM
+options it needs (`--add-opens`, class loader, heap settings).
 
 Nightly builds
 ==============

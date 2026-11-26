@@ -33,6 +33,27 @@ Large folders (100,000+ files)
 - Heap starts small (32 MB) and grows only when needed, up to 512 MB (was a fixed 128 MB, which ran out of
   memory at 100k files)
 
+Install on Ubuntu / Debian
+==========================
+
+Download the package of the latest release and install it with apt (Java 21 is installed automatically if needed):
+
+```
+wget https://github.com/alfishe/mucommander/releases/latest/download/trolcommander_latest_all.deb
+sudo apt install ./trolcommander_latest_all.deb
+```
+
+trolCommander then appears in the application menu, and can be started with `trolcommander` from a terminal.
+Releases: https://github.com/alfishe/mucommander/releases
+
+Update: install the package of a newer release the same way. Uninstall: `sudo apt remove trolcommander`
+
+The package installs the application in `/opt/trolcommander`, the `trolcommander` command in `/usr/bin`, a menu entry
+and icons. Settings stay in `~/.trolcommander`.
+
+Other systems (Windows, macOS, other Linux): install Java 21, download `trolCommander-<version>.zip` from the
+release, unpack it and start `bin/trolcommander` (`bin\trolcommander.bat` on Windows).
+
 System requirements
 ===================
 
@@ -49,6 +70,7 @@ Build requirements
 - JDK 21 or newer
 - Nothing else to install: the Gradle wrapper (Gradle 8.14) and the Kotlin plugin are downloaded automatically
 - Internet access on the first build to fetch dependencies from Maven Central (a few libraries are bundled in `lib/`)
+- For the Debian/Ubuntu package: `dpkg-deb` (preinstalled on Debian/Ubuntu)
 
 How to build
 ============
@@ -68,12 +90,11 @@ Run the tests:
 Full build (compile, tests, distributions):
 `./gradlew clean build`
 
+Build a Debian/Ubuntu package (`build/distributions/trolcommander_<version>_all.deb`):
+`./gradlew debPackage`
+
+Build the package and install it on this machine (Debian/Ubuntu; asks for the administrator password):
+`./gradlew installDeb`
+
 Note: start the application with the launcher scripts (or `runApp`) rather than `java -jar`: they pass the JVM
 options it needs (`--add-opens`, class loader, heap settings).
-
-Nightly builds
-==============
-
-Latest jar file: https://trolsoft.ru/content/soft/trolcommander/nightly/trolcommander.jar
-
-Latest MacOS dmg: https://trolsoft.ru/content/soft/trolcommander/nightly/trolCommander.dmg

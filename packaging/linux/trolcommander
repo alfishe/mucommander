@@ -1,0 +1,43 @@
+#!/bin/bash
+# trolCommander launcher.
+# - X11 display available (local login, xrdp, Xwayland-enabled GNOME): run directly.
+# - Wayland-only session (e.g. gnome-shell --no-x11): Java/Swing needs X11, so start a
+#   private rootful Xwayland window, run trolCommander inside it, tear it down on exit.
+APP=/opt/trolcommander/bin/trolcommander
+
+if [ -n "$DISPLAY" ] || [ -z "$WAYLAND_DISPLAY" ] || ! command -v Xwayland >/dev/null; then
+    exec "$APP" "$@"
+fi
+
+GEOM=${TROLCOMMANDER_XWAYLAND_GEOMETRY:-1600x1000}
+tmp=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/trolcommander.XXXXXX") || exit 1
+mkfifo "$tmp/fd"
+
+Xwayland -displayfd 3 -decorate -geometry "$GEOM" -nolisten tcp 3>"$tmp/fd" &
+XPID=$!
+cleanup() { kill "$XPID" 2>/dev/null; rm -rf "$tmp"; }
+trap cleanup EXIT INT TERM HUP
+
+if ! read -r -t 15 num <"$tmp/fd" || [ -z "$num" ]; then
+    echo "trolcommander: failed to start Xwayland" >&2
+    exit 1
+fi
+export DISPLAY=":$num"
+unset WAYLAND_DISPLAY
+
+# No window manager inside the nested display: stretch the main window to fill it.
+if command -v xdotool >/dev/null; then
+    (
+        for _ in $(seq 1 60); do
+            wid=$(xdotool search --onlyvisible --classname com-mucommander-TrolCommander 2>/dev/null | head -1)
+            if [ -n "$wid" ] && xdotool getwindowname "$wid" 2>/dev/null | grep -q ' - trolCommander$'; then
+                read -r w h < <(xdotool getdisplaygeometry)
+                xdotool windowmove "$wid" 0 0 windowsize "$wid" "$w" "$h"
+                break
+            fi
+            sleep 0.5
+        done
+    ) &
+fi
+
+"$APP" "$@"

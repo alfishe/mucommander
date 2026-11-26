@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=trolCommander
+GenericName=File Manager
+Comment=Dual-pane file manager
+Exec=trolcommander %F
+Icon=trolcommander
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=file;manager;commander;explorer;
+StartupNotify=true
+StartupWMClass=com-mucommander-TrolCommander

@@ -325,6 +325,128 @@ tasks.register('runApp', JavaExec) {
     jvmArgs = application.applicationDefaultJvmArgs
 }
 
+// ==================== DEBIAN / UBUNTU PACKAGE ====================
+// ./gradlew debPackage  -> build/distributions/trolcommander_<version>_all.deb
+// ./gradlew installDeb  -> builds the package and installs it with apt (asks for the administrator password)
+//
+// Installs the application in /opt/trolcommander, the `trolcommander` command in /usr/bin, and registers it in the
+// application menu (desktop entry + icons). Uninstall: sudo apt remove trolcommander
+
+// Package version: <version>+r<number of commits>, so that every new build is an upgrade for apt
+def debRevision = { ->
+    try {
+        def p = ['git', 'rev-list', '--count', 'HEAD'].execute(null, projectDir)
+        def n = p.text.trim()
+        p.waitFor() == 0 && n ? "+r${n}" : ''
+    } catch (Exception ignored) {
+        ''
+    }
+}()
+def debVersion = "${project.version}${debRevision}"
+def debName = "trolcommander_${debVersion}_all.deb"
+def debFile = layout.buildDirectory.file("distributions/${debName}")
+def debRoot = layout.buildDirectory.dir('deb/root')
+
+tasks.register('debPackage') {
+    group = 'distribution'
+    description = 'Builds a Debian/Ubuntu package (.deb) with menu entry and icons'
+    dependsOn 'installShadowDist'
+    inputs.dir('packaging/linux')
+    inputs.dir(layout.buildDirectory.dir('install/trolcommander-shadow'))
+    outputs.file(debFile)
+    doLast {
+        def root = debRoot.get().asFile
+        project.delete(root)
+        project.copy {
+            from layout.buildDirectory.dir('install/trolcommander-shadow')
+            into new File(root, 'opt/trolcommander')
+        }
+        project.copy {
+            from 'packaging/linux/trolcommander'
+            into new File(root, 'usr/bin')
+            filePermissions { unix(0755) }
+        }
+        project.copy {
+            from 'packaging/linux/trolcommander.desktop'
+            into new File(root, 'usr/share/applications')
+        }
+        [16: 'icon16_24.png', 32: 'icon32_24.png', 48: 'icon48_24.png', 128: 'icon128_24.png', 256: 'icon256_24.png'].each { size, icon ->
+            project.copy {
+                from "src/main/resources/images/trolcommander/${icon}"
+                into new File(root, "usr/share/icons/hicolor/${size}x${size}/apps")
+                rename { 'trolcommander.png' }
+            }
+        }
+        def debian = new File(root, 'DEBIAN')
+        project.copy {
+            from 'packaging/linux'
+            include 'postinst', 'postrm'
+            into debian
+            filePermissions { unix(0755) }
+        }
+        project.delete(new File(root, 'opt/trolcommander/bin/trolcommander.bat'))
+        // Standard permissions whatever the umask: directories and programs 755, other files 644
+        project.fileTree(root).visit { d ->
+            def f = d.file
+            def exec = d.directory || f.path.contains('/bin/') || f.name in ['postinst', 'postrm']
+            ['chmod', exec ? '755' : '644', f.absolutePath].execute().waitFor()
+        }
+        ['chmod', '755', root.absolutePath].execute().waitFor()
+
+        def maintainer = project.findProperty('debMaintainer') ?: {
+            def name = ['git', 'config', 'user.name'].execute().text.trim()
+            def email = ['git', 'config', 'user.email'].execute().text.trim()
+            name && email ? "${name} <${email}>" : 'trolCommander packager <root@localhost>'
+        }()
+        long sizeKb = project.fileTree(root) { exclude 'DEBIAN/**' }.files.sum(0L) { it.length() } / 1024
+        new File(debian, 'control').text = """\
+Package: trolcommander
+Version: ${debVersion}
+Architecture: all
+Maintainer: ${maintainer}
+Installed-Size: ${sizeKb}
+Depends: java21-runtime | openjdk-21-jre
+Recommends: libsecret-tools
+Suggests: xwayland, xdotool
+Section: utils
+Priority: optional
+Homepage: https://github.com/alfishe/mucommander
+Description: Dual-pane file manager
+ trolCommander is a dual-pane file manager (a fork of muCommander) with
+ SMB2/SMB3, SFTP, FTP and archive support, a credentials manager using the
+ desktop keyring, and fast handling of very large folders.
+"""
+        def out = debFile.get().asFile
+        out.parentFile.mkdirs()
+        project.exec {
+            commandLine 'dpkg-deb', '--root-owner-group', '-Zxz', '--build', root.absolutePath, out.absolutePath
+        }
+        println "Package: ${out}"
+    }
+}
+
+tasks.register('installDeb') {
+    group = 'distribution'
+    description = 'Builds the .deb package and installs it with apt (Debian/Ubuntu)'
+    dependsOn 'debPackage'
+    doLast {
+        def deb = debFile.get().asFile.absolutePath
+        // sudo can't ask for a password from the Gradle daemon (no terminal): use it only if it needs no password,
+        // otherwise pkexec shows the desktop's graphical password prompt
+        def sudoOk = ['sudo', '-n', 'true'].execute().waitFor() == 0
+        def hasDesktop = System.getenv('DISPLAY') || System.getenv('WAYLAND_DISPLAY')
+        def pkexec = ['sh', '-c', 'command -v pkexec'].execute().waitFor() == 0
+        def elevate = sudoOk ? ['sudo', '-n'] : (pkexec && hasDesktop ? ['pkexec'] : null)
+        if (elevate == null) {
+            throw new GradleException("Administrator rights are needed. Install the package with:\n  sudo apt install ${deb}")
+        }
+        project.exec {
+            commandLine elevate + ['env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install', '-y', '--reinstall', deb]
+        }
+        println "trolCommander installed: run 'trolcommander' or find it in the application menu"
+    }
+}
+
 // ==================== УТИЛИТЫ ДЛЯ МИГРАЦИИ ====================
 
 // Задача: показать, какие зависимости берутся из локальных файлов
